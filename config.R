@@ -1,370 +1,850 @@
-# config.R - Configuration validation and setup utilities
+# modules/database.R
+# Database connection and utility functions
 
-# Helper operator for string repetition (MUST BE DEFINED FIRST)
-`%R%` <- function(x, n) {
-  paste(rep(x, n), collapse = "")
-}
+library(DBI)
+library(RMySQL)
+library(pool)
+library(glue)
 
-# Create database configuration from environment variables only
-get_db_config <- function() {
-  config <- list(
-    host = Sys.getenv("DB_HOST"),
-    dbname = Sys.getenv("DB_NAME"),
-    username = Sys.getenv("DB_USER"),
-    password = Sys.getenv("DB_PASS"),
-    port = as.integer(Sys.getenv("DB_PORT", "3306"))
+# Create database connection pool with SSL support
+db_connect_pool <- function(config) {
+  # Validate required environment variables
+  required_vars <- c("host", "dbname", "username", "password")
+  missing_vars <- required_vars[sapply(required_vars, function(x) is.null(config[[x]]) || config[[x]] == "")]
+  
+  if (length(missing_vars) > 0) {
+    stop(paste("Missing required database configuration:", paste(missing_vars, collapse = ", ")))
+  }
+  
+  # SSL configuration
+  ssl_params <- list()
+  
+  # Method 1: Basic SSL (most common for cloud providers)
+  ssl_params$`ssl-mode` <- "REQUIRED"
+  
+  # Method 2: If you have specific SSL certificates (uncomment if needed)
+  # ssl_params$`ssl-ca` <- config$ssl_ca %||% NULL
+  # ssl_params$`ssl-cert` <- config$ssl_cert %||% NULL
+  # ssl_params$`ssl-key` <- config$ssl_key %||% NULL
+  
+  # Method 3: For development/testing (less secure)
+  # ssl_params$`ssl-mode` <- "REQUIRED"
+  # ssl_params$`ssl-verify-server-cert` <- FALSE
+  
+  # Build connection parameters
+  conn_params <- list(
+    drv = RMySQL::MySQL(),
+    host = config$host,
+    dbname = config$dbname,
+    username = config$username,
+    password = config$password,
+    port = ifelse(is.null(config$port), 3306, config$port),
+    encoding = "utf8mb4",
+    # Connection pool settings
+    minSize = 1,
+    maxSize = 10
   )
   
-  # Validate that all required variables are set
+  # Add SSL parameters
+  conn_params <- c(conn_params, ssl_params)
+  
+  # Alternative method using groups parameter for SSL
+  # This creates a connection using MySQL configuration groups
+  # Uncomment if the above method doesn't work:
+  
+  # conn_params$groups <- "client"
+  # conn_params$default.file <- "~/.my.cnf"  # MySQL config file with SSL settings
+  
+  do.call(pool::dbPool, conn_params)
+}
+
+# Alternative connection function using connection string approach
+db_connect_pool_string <- function(config) {
+  # Validate required environment variables
   required_vars <- c("host", "dbname", "username", "password")
-  missing_vars <- c()
-  
-  for (var in required_vars) {
-    if (is.null(config[[var]]) || config[[var]] == "" || is.na(config[[var]])) {
-      missing_vars <- c(missing_vars, toupper(paste0("DB_", sub("host|dbname|username|password", 
-                                                               c("HOST", "NAME", "USER", "PASS")[match(var, c("host", "dbname", "username", "password"))], var))))
-    }
-  }
+  missing_vars <- required_vars[sapply(required_vars, function(x) is.null(config[[x]]) || config[[x]] == "")]
   
   if (length(missing_vars) > 0) {
-    stop(paste("Missing required environment variables:", paste(missing_vars, collapse = ", "), 
-               "\nPlease set these in your Posit Connect app settings."))
+    stop(paste("Missing required database configuration:", paste(missing_vars, collapse = ", ")))
   }
   
-  return(config)
+  # Build connection string with SSL
+  port <- ifelse(is.null(config$port), 3306, config$port)
+  
+  # Connection string with SSL parameters
+  conn_string <- sprintf(
+    "mysql://%s:%s@%s:%s/%s?ssl-mode=REQUIRED&charset=utf8mb4",
+    config$username,
+    config$password,
+    config$host,
+    port,
+    config$dbname
+  )
+  
+  pool::dbPool(
+    drv = RMySQL::MySQL(),
+    url = conn_string,
+    minSize = 1,
+    maxSize = 10
+  )
 }
 
-# Validate environment variables
-validate_environment <- function() {
-  cat("Validating RQDA Online Environment Configuration...\n")
-  cat(paste(rep("=", 50), collapse = ""), "\n")
-  
-  required_vars <- c("DB_HOST", "DB_NAME", "DB_USER", "DB_PASS")
-  optional_vars <- c("DB_PORT", "SHINY_LOG_LEVEL", "APP_ENV")
-  
-  missing_vars <- c()
-  warnings <- c()
-  
-  # Check if running on Posit Connect
-  is_posit_connect <- !is.na(Sys.getenv("R_CONFIG_ACTIVE", NA)) || 
-                     !is.na(Sys.getenv("CONNECT_SERVER", NA)) ||
-                     !is.na(Sys.getenv("RSTUDIO_PRODUCT", NA))
-  
-  if (is_posit_connect) {
-    cat("🌐 Running on Posit Connect\n")
-  } else {
-    cat("💻 Running in local development environment\n")
-  }
-  
-  # Check required variables
-  cat("\nRequired Environment Variables:\n")
-  for (var in required_vars) {
-    value <- Sys.getenv(var)
-    if (value == "") {
-      missing_vars <- c(missing_vars, var)
-      cat(sprintf("✗ %s: NOT SET\n", var))
-    } else {
-      # Mask sensitive information
-      display_value <- ifelse(var == "DB_PASS", 
-                             paste0(substr(value, 1, 2), "***"), 
-                             value)
-      cat(sprintf("✓ %s: %s\n", var, display_value))
-    }
-  }
-  
-  # Check optional variables
-  cat("\nOptional Environment Variables:\n")
-  for (var in optional_vars) {
-    value <- Sys.getenv(var)
-    if (value == "") {
-      default_val <- switch(var,
-        "DB_PORT" = "3306",
-        "SHINY_LOG_LEVEL" = "INFO", 
-        "APP_ENV" = "production",
-        "not set"
-      )
-      cat(sprintf("- %s: not set (using default: %s)\n", var, default_val))
-    } else {
-      cat(sprintf("✓ %s: %s\n", var, value))
-    }
-  }
-  
-  # Port validation
-  port <- Sys.getenv("DB_PORT", "3306")
-  if (!grepl("^[0-9]+$", port) || as.integer(port) < 1 || as.integer(port) > 65535) {
-    warnings <- c(warnings, "DB_PORT should be a valid port number (1-65535)")
-  }
-  
-  # Environment-specific guidance
-  cat("\nEnvironment Configuration:\n")
-  if (is_posit_connect) {
-    cat("📋 Posit Connect Deployment:\n")
-    cat("   - Environment variables should be set in app settings\n")
-    cat("   - Go to your app dashboard > Settings > Environment Variables\n")
-    cat("   - Set: DB_HOST, DB_NAME, DB_USER, DB_PASS, DB_PORT\n")
-  } else {
-    cat("🏠 Local Development:\n")
-    cat("   - Environment variables should be in .Renviron file\n")
-    cat("   - Create .Renviron in your project root directory\n")
-    cat("   - Add: DB_HOST=value, DB_NAME=value, etc.\n")
-  }
-  
-  # Report results
-  cat("\n")
-  cat(paste(rep("=", 50), collapse = ""), "\n")
-  
-  if (length(missing_vars) > 0) {
-    cat("❌ CONFIGURATION INCOMPLETE\n")
-    cat(sprintf("Missing required variables: %s\n", paste(missing_vars, collapse = ", ")))
-    
-    if (is_posit_connect) {
-      cat("\nTo fix on Posit Connect:\n")
-      cat("1. Go to your app dashboard\n")
-      cat("2. Click 'Settings' tab\n") 
-      cat("3. Click 'Environment Variables' section\n")
-      cat("4. Add the missing variables:\n")
-      for (var in missing_vars) {
-        cat(sprintf("   %s = your_value\n", var))
-      }
-      cat("5. Restart your application\n")
-    } else {
-      cat("\nTo fix locally:\n")
-      cat("Create/edit .Renviron file with:\n")
-      for (var in missing_vars) {
-        cat(sprintf("   %s=your_value\n", var))
-      }
-      cat("Then restart R session\n")
-    }
-    return(FALSE)
-  }
-  
-  if (length(warnings) > 0) {
-    cat("⚠️  CONFIGURATION WARNINGS\n")
-    for (warning in warnings) {
-      cat(sprintf("  - %s\n", warning))
-    }
-  }
-  
-  cat("✅ CONFIGURATION VALID\n")
-  cat("All required environment variables are properly set.\n")
-  return(TRUE)
-}
-
-# Test database connection with detailed feedback and auto table creation
-test_database_connection <- function(config = NULL) {
-  if (is.null(config)) {
-    config <- get_db_config()
-  }
-  
-  cat("Testing Database Connection...\n")
-  cat("Host:", config$host, "\n")
-  cat("Database:", config$dbname, "\n")
-  cat("User:", config$username, "\n")
-  cat("Port:", config$port, "\n\n")
+# Test SSL connection function
+test_ssl_connection <- function(config) {
+  cat("Testing SSL database connection...\n")
   
   tryCatch({
-    # Test basic connection
-    pool <- db_connect_pool(config)
+    # Test basic connection first
+    test_conn <- DBI::dbConnect(
+      RMySQL::MySQL(),
+      host = config$host,
+      dbname = config$dbname,
+      username = config$username,
+      password = config$password,
+      port = ifelse(is.null(config$port), 3306, config$port),
+      `ssl-mode` = "REQUIRED"
+    )
     
-    # Test query execution with MariaDB-compatible syntax
-    result <- pool::dbGetQuery(pool, "SELECT 1 as test, NOW() as current_time")
+    # Check SSL status - using MariaDB compatible query
+    ssl_status <- DBI::dbGetQuery(test_conn, "SHOW STATUS LIKE 'Ssl_cipher'")
     
-    cat("✅ Database connection successful!\n")
-    cat("Server time:", as.character(result$current_time), "\n\n")
-    
-    # Create tables if they don't exist
-    cat("Checking database schema...\n")
-    schema_success <- create_tables_if_not_exist(pool)
-    
-    if (schema_success) {
-      cat("✅ Database schema is ready\n")
+    if (nrow(ssl_status) > 0 && ssl_status$Value != "") {
+      cat("✓ SSL connection established successfully\n")
+      cat("SSL Cipher:", ssl_status$Value, "\n")
+      
+      # Test basic query with MariaDB compatible syntax
+      test_query <- DBI::dbGetQuery(test_conn, "SELECT 1 as test, NOW() as current_time")
+      cat("✓ Database query test successful\n")
+      
+      # Additional SSL info (optional)
+      tryCatch({
+        ssl_info <- DBI::dbGetQuery(test_conn, "SHOW STATUS LIKE 'Ssl_%'")
+        cat("SSL Status Details:\n")
+        for(i in 1:min(5, nrow(ssl_info))) {
+          cat(sprintf("  %s: %s\n", ssl_info$Variable_name[i], ssl_info$Value[i]))
+        }
+      }, error = function(e) {
+        cat("Note: Could not retrieve detailed SSL info\n")
+      })
+      
+      DBI::dbDisconnect(test_conn)
+      return(TRUE)
     } else {
-      cat("⚠️  Some tables could not be created\n")
+      cat("⚠ Connection established but SSL not active\n")
+      DBI::dbDisconnect(test_conn)
+      return(FALSE)
     }
-    
-    # Verify core tables exist
-    core_tables <- c("users", "project", "source", "freecode", "coding")
-    missing_tables <- c()
-    
-    for (table in core_tables) {
-      table_check <- pool::dbGetQuery(pool, sprintf("SHOW TABLES LIKE '%s'", table))
-      if (nrow(table_check) == 0) {
-        missing_tables <- c(missing_tables, table)
-      }
-    }
-    
-    if (length(missing_tables) == 0) {
-      cat("✅ All core RQDA tables are present\n")
-    } else {
-      cat("❌ Missing core tables:", paste(missing_tables, collapse = ", "), "\n")
-    }
-    
-    # Close connection
-    pool::poolClose(pool)
-    
-    return(length(missing_tables) == 0)
     
   }, error = function(e) {
-    cat("❌ Database connection failed!\n")
-    cat("Error:", e$message, "\n")
-    cat("\nCommon solutions:\n")
-    cat("1. Check that DB_HOST is reachable\n")
-    cat("2. Verify DB_USER and DB_PASS are correct\n")
-    cat("3. Ensure the database DB_NAME exists\n")
-    cat("4. Check firewall settings for DB_PORT\n")
+    cat("✗ SSL connection failed:", e$message, "\n")
     
-    # Environment-specific troubleshooting
-    is_posit_connect <- !is.na(Sys.getenv("R_CONFIG_ACTIVE", NA)) || 
-                       !is.na(Sys.getenv("CONNECT_SERVER", NA))
-    
-    if (is_posit_connect) {
-      cat("\nPostit Connect specific checks:\n")
-      cat("5. Verify environment variables are set in app settings\n")
-      cat("6. Check if database server allows connections from Posit Connect\n")
-      cat("7. Verify network connectivity from Posit cloud to your database\n")
-    } else {
-      cat("\nLocal development checks:\n")
-      cat("5. Check .Renviron file exists and has correct values\n")
-      cat("6. Restart R session after changing .Renviron\n")
-      cat("7. Test database connectivity from your local network\n")
-    }
-    
-    return(FALSE)
+    # Try fallback connection without SSL
+    cat("Attempting fallback connection without SSL...\n")
+    tryCatch({
+      fallback_conn <- DBI::dbConnect(
+        RMySQL::MySQL(),
+        host = config$host,
+        dbname = config$dbname,
+        username = config$username,
+        password = config$password,
+        port = ifelse(is.null(config$port), 3306, config$port)
+      )
+      
+      # Test basic query
+      test_query <- DBI::dbGetQuery(fallback_conn, "SELECT 1 as test")
+      cat("✓ Fallback connection (no SSL) successful\n")
+      DBI::dbDisconnect(fallback_conn)
+      return(FALSE)
+      
+    }, error = function(e2) {
+      cat("✗ All connection attempts failed:", e2$message, "\n")
+      return(FALSE)
+    })
   })
 }
 
-# Setup helper for new installations
-setup_helper <- function() {
-  is_posit_connect <- !is.na(Sys.getenv("R_CONFIG_ACTIVE", NA)) || 
-                     !is.na(Sys.getenv("CONNECT_SERVER", NA))
+# Create all required tables if they don't exist
+create_tables_if_not_exist <- function(pool) {
+  cat("Checking and creating database tables...\n")
   
-  cat("RQDA Online Setup Helper\n")
-  cat("========================\n\n")
+  # Define all table creation statements
+  table_statements <- list(
+    project = "
+      CREATE TABLE IF NOT EXISTS project (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        databaseversion VARCHAR(20) DEFAULT '0.2.2',
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        memo TEXT,
+        about TEXT,
+        owner VARCHAR(255),
+        status TINYINT DEFAULT 1,
+        project_name VARCHAR(255) NOT NULL,
+        created_by VARCHAR(255),
+        INDEX idx_owner (owner),
+        INDEX idx_status (status)
+      )",
+    
+    users = "
+      CREATE TABLE IF NOT EXISTS users (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        username VARCHAR(255) UNIQUE NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        last_login DATETIME,
+        active TINYINT DEFAULT 1,
+        INDEX idx_username (username),
+        INDEX idx_email (email)
+      )",
+    
+    source = "
+      CREATE TABLE IF NOT EXISTS source (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        file LONGTEXT NOT NULL,
+        memo TEXT,
+        owner VARCHAR(255),
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status),
+        INDEX idx_owner (owner),
+        FULLTEXT(file, name)
+      )",
+    
+    filecat = "
+      CREATE TABLE IF NOT EXISTS filecat (
+        catid INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        memo TEXT,
+        owner VARCHAR(255),
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    freecode = "
+      CREATE TABLE IF NOT EXISTS freecode (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        memo TEXT,
+        owner VARCHAR(255),
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        status TINYINT DEFAULT 1,
+        color VARCHAR(7) DEFAULT '#FFFF00',
+        project_id INT,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status),
+        INDEX idx_name (name)
+      )",
+    
+    codecat = "
+      CREATE TABLE IF NOT EXISTS codecat (
+        catid INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        memo TEXT,
+        owner VARCHAR(255),
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    coding = "
+      CREATE TABLE IF NOT EXISTS coding (
+        rowid INT AUTO_INCREMENT PRIMARY KEY,
+        cid INT NOT NULL,
+        fid INT NOT NULL,
+        seltext TEXT,
+        selfirst INT,
+        selend INT,
+        status TINYINT DEFAULT 1,
+        owner VARCHAR(255),
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        memo TEXT,
+        project_id INT,
+        FOREIGN KEY (cid) REFERENCES freecode(id) ON DELETE CASCADE,
+        FOREIGN KEY (fid) REFERENCES source(id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_cid_fid (cid, fid),
+        INDEX idx_project_status (project_id, status),
+        INDEX idx_position (fid, selfirst, selend),
+        FULLTEXT(seltext)
+      )",
+    
+    treecode = "
+      CREATE TABLE IF NOT EXISTS treecode (
+        cid INT,
+        catid INT,
+        memo TEXT,
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        owner VARCHAR(255),
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        PRIMARY KEY (cid, catid),
+        FOREIGN KEY (cid) REFERENCES freecode(id) ON DELETE CASCADE,
+        FOREIGN KEY (catid) REFERENCES codecat(catid) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    treefile = "
+      CREATE TABLE IF NOT EXISTS treefile (
+        fid INT,
+        catid INT,
+        memo TEXT,
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        owner VARCHAR(255),
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        PRIMARY KEY (fid, catid),
+        FOREIGN KEY (fid) REFERENCES source(id) ON DELETE CASCADE,
+        FOREIGN KEY (catid) REFERENCES filecat(catid) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    annotation = "
+      CREATE TABLE IF NOT EXISTS annotation (
+        rowid INT AUTO_INCREMENT PRIMARY KEY,
+        fid INT NOT NULL,
+        position INT,
+        annotation TEXT,
+        owner VARCHAR(255),
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        FOREIGN KEY (fid) REFERENCES source(id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_fid_position (fid, position),
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    cases = "
+      CREATE TABLE IF NOT EXISTS cases (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        memo TEXT,
+        owner VARCHAR(255),
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    caseAttr = "
+      CREATE TABLE IF NOT EXISTS caseAttr (
+        variable VARCHAR(255),
+        value TEXT,
+        caseId INT,
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        owner VARCHAR(255),
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        PRIMARY KEY (variable, caseId),
+        FOREIGN KEY (caseId) REFERENCES cases(id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    caselinkage = "
+      CREATE TABLE IF NOT EXISTS caselinkage (
+        caseid INT,
+        fid INT,
+        owner VARCHAR(255),
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        PRIMARY KEY (caseid, fid),
+        FOREIGN KEY (caseid) REFERENCES cases(id) ON DELETE CASCADE,
+        FOREIGN KEY (fid) REFERENCES source(id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    attributes = "
+      CREATE TABLE IF NOT EXISTS attributes (
+        name VARCHAR(255) PRIMARY KEY,
+        status TINYINT DEFAULT 1,
+        memo TEXT,
+        owner VARCHAR(255),
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        class VARCHAR(50) DEFAULT 'character',
+        project_id INT,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    fileAttr = "
+      CREATE TABLE IF NOT EXISTS fileAttr (
+        variable VARCHAR(255),
+        value TEXT,
+        fid INT,
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        owner VARCHAR(255),
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        PRIMARY KEY (variable, fid),
+        FOREIGN KEY (fid) REFERENCES source(id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    image = "
+      CREATE TABLE IF NOT EXISTS image (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255),
+        imagepath TEXT,
+        memo TEXT,
+        owner VARCHAR(255),
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    imageCoding = "
+      CREATE TABLE IF NOT EXISTS imageCoding (
+        cid INT,
+        iid INT,
+        x1 INT,
+        y1 INT,
+        x2 INT,
+        y2 INT,
+        memo TEXT,
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        owner VARCHAR(255),
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        FOREIGN KEY (cid) REFERENCES freecode(id) ON DELETE CASCADE,
+        FOREIGN KEY (iid) REFERENCES image(id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    project_permissions = "
+      CREATE TABLE IF NOT EXISTS project_permissions (
+        project_id INT,
+        user_id INT,
+        permission_level ENUM('owner', 'editor', 'viewer') DEFAULT 'viewer',
+        granted_by INT,
+        granted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (project_id, user_id),
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (granted_by) REFERENCES users(id)
+      )"
+  )
   
-  if (is_posit_connect) {
-    cat("🌐 POSIT CONNECT DEPLOYMENT\n\n")
-    
-    cat("Step 1: Set Environment Variables in Posit Connect\n")
-    cat("1. Go to your app dashboard\n")
-    cat("2. Click the 'Settings' tab\n")
-    cat("3. Scroll to 'Environment Variables' section\n")
-    cat("4. Add these required variables:\n\n")
-    cat("   DB_HOST=mexico.bbfarm.org\n")
-    cat("   DB_NAME=chapmjs_rqdadb\n")
-    cat("   DB_USER=your_mysql_username\n")
-    cat("   DB_PASS=your_mysql_password\n")
-    cat("   DB_PORT=3306\n\n")
-    cat("5. Click 'Save' and restart your application\n\n")
-    
-    cat("Step 2: Database Setup\n")
-    cat("Ensure the database 'chapmjs_rqdadb' exists on mexico.bbfarm.org\n")
-    cat("The application will automatically create tables if they don't exist\n\n")
-    
-    cat("Step 3: Test Deployment\n")
-    cat("The app will validate configuration on startup\n")
-    cat("Check the logs for any configuration errors\n\n")
-    
-  } else {
-    cat("💻 LOCAL DEVELOPMENT SETUP\n\n")
-    
-    cat("Step 1: Environment Variables\n")
-    cat("Create a .Renviron file in your project root:\n\n")
-    cat("# Database Configuration\n")
-    cat("DB_HOST=mexico.bbfarm.org\n")
-    cat("DB_NAME=chapmjs_rqdadb\n")
-    cat("DB_USER=your_username\n")
-    cat("DB_PASS=your_password\n")
-    cat("DB_PORT=3306\n\n")
-    
-    cat("Step 2: Install Required Packages\n")
-    cat("Run: source('packages.R')\n\n")
-    
-    cat("Step 3: Restart R Session\n")
-    cat("Restart R to load the new environment variables\n\n")
-    
-    cat("Step 4: Validation\n")
-    cat("Run: validate_environment() and test_database_connection()\n\n")
-    
-    cat("Step 5: Start Application\n")
-    cat("Run: shiny::runApp()\n\n")
+  created_tables <- c()
+  failed_tables <- c()
+  
+  # Create tables in dependency order (core tables first)
+  table_order <- c("users", "project", "source", "filecat", "freecode", "codecat", 
+                   "coding", "treecode", "treefile", "annotation", "cases", 
+                   "caseAttr", "caselinkage", "attributes", "fileAttr", 
+                   "image", "imageCoding", "project_permissions")
+  
+  for (table_name in table_order) {
+    if (table_name %in% names(table_statements)) {
+      tryCatch({
+        # Execute table creation with proper error handling
+        result <- pool::dbExecute(pool, table_statements[[table_name]])
+        cat(sprintf("✓ Table '%s' ready\n", table_name))
+        created_tables <- c(created_tables, table_name)
+      }, error = function(e) {
+        cat(sprintf("✗ Failed to create table '%s': %s\n", table_name, e$message))
+        failed_tables <- c(failed_tables, table_name)
+        
+        # Try to continue with other tables
+        NULL
+      })
+    }
   }
-}
-
-# Environment file generator for local development only
-generate_env_file <- function(file_path = ".Renviron") {
-  # Check if running on Posit Connect
-  is_posit_connect <- !is.na(Sys.getenv("R_CONFIG_ACTIVE", NA)) || 
-                     !is.na(Sys.getenv("CONNECT_SERVER", NA))
   
-  if (is_posit_connect) {
-    cat("⚠️  Running on Posit Connect - environment variables should be set in app settings, not .Renviron file\n")
-    cat("Use the Posit Connect dashboard to manage environment variables.\n")
+  # Summary
+  cat(sprintf("\nTable creation summary: %d/%d successful\n", 
+              length(created_tables), length(table_order)))
+  
+  if (length(failed_tables) > 0) {
+    cat("Warning: Failed to create tables:", paste(failed_tables, collapse = ", "), "\n")
+    cat("This might be due to permission issues or syntax differences.\n")
+    # Don't return FALSE immediately - let the app try to continue
+  }
+  
+  # Return TRUE if at least core tables were created successfully
+  core_tables <- c("users", "project", "source", "freecode", "coding")
+  core_created <- intersect(created_tables, core_tables)
+  
+  if (length(core_created) >= 3) {  # At least 3 core tables
+    cat("✅ Essential tables created successfully\n")
+    return(TRUE)
+  } else if (length(created_tables) > 0) {
+    cat("⚠️  Some tables created, but missing core tables\n")
+    return(TRUE)  # Still allow app to continue
+  } else {
+    cat("❌ No tables could be created\n")
     return(FALSE)
   }
-  
-  env_content <- "# RQDA Online Environment Configuration
-# Generated on: %s
-# WARNING: Keep this file secure and do not commit to version control
-# NOTE: For Posit Connect deployment, set these as environment variables in app settings
-
-# Database Configuration
-DB_HOST=mexico.bbfarm.org
-DB_NAME=chapmjs_rqdadb
-DB_USER=your_username
-DB_PASS=your_password
-DB_PORT=3306
-
-# Optional Configuration
-# SHINY_LOG_LEVEL=INFO
-# APP_ENV=development
-"
-  
-  formatted_content <- sprintf(env_content, Sys.time())
-  
-  if (file.exists(file_path)) {
-    cat("Warning:", file_path, "already exists. Backup created.\n")
-    file.copy(file_path, paste0(file_path, ".backup"))
-  }
-  
-  writeLines(formatted_content, file_path)
-  cat("Environment file created:", file_path, "\n")
-  cat("Please edit it with your actual database credentials.\n")
-  cat("Remember to restart your R session after editing .Renviron\n")
-  
-  return(TRUE)
 }
 
-# Check if running in different environments
-get_deployment_environment <- function() {
-  if (!is.na(Sys.getenv("R_CONFIG_ACTIVE", NA)) || 
-      !is.na(Sys.getenv("CONNECT_SERVER", NA)) ||
-      !is.na(Sys.getenv("RSTUDIO_PRODUCT", NA))) {
-    return("posit_connect")
-  } else if (!is.na(Sys.getenv("SHINYAPPS_USER", NA))) {
-    return("shinyapps_io")
-  } else if (!is.na(Sys.getenv("AWS_EXECUTION_ENV", NA))) {
-    return("aws")
-  } else {
-    return("local")
-  }
+# Execute query with error handling
+db_execute_query <- function(pool, query, params = list()) {
+  tryCatch({
+    if (length(params) > 0) {
+      result <- pool::dbGetQuery(pool, query, params = params)
+    } else {
+      result <- pool::dbGetQuery(pool, query)
+    }
+    return(result)
+  }, error = function(e) {
+    warning(paste("Database query error:", e$message))
+    return(NULL)
+  })
 }
 
-# Main validation function to run at app startup
-startup_validation <- function() {
-  cat("Starting RQDA Online Application...\n\n")
+# Safe SQL query execution (equivalent to RQDAQuery)
+rqda_query <- function(pool, sql, params = list()) {
+  db_execute_query(pool, sql, params)
+}
+
+# Get next available ID for a table
+get_next_id <- function(pool, table_name, id_column = "id") {
+  query <- glue("SELECT COALESCE(MAX({id_column}), 0) + 1 AS next_id FROM {table_name}")
+  result <- db_execute_query(pool, query)
+  if (!is.null(result) && nrow(result) > 0) {
+    return(result$next_id[1])
+  }
+  return(1)
+}
+
+# Check if user has permission for project
+check_project_permission <- function(pool, user_id, project_id, required_level = "viewer") {
+  if (is.null(user_id) || is.null(project_id)) return(FALSE)
   
-  # Validate environment
-  if (!validate_environment()) {
-    stop("Environment validation failed. Please check your configuration.")
+  query <- "
+    SELECT pp.permission_level 
+    FROM project_permissions pp 
+    WHERE pp.user_id = ? AND pp.project_id = ?
+    UNION
+    SELECT 'owner' as permission_level
+    FROM project p 
+    WHERE p.created_by = ? AND p.id = ?
+  "
+  
+  result <- db_execute_query(pool, query, list(user_id, project_id, user_id, project_id))
+  
+  if (is.null(result) || nrow(result) == 0) return(FALSE)
+  
+  permission_levels <- c("viewer" = 1, "editor" = 2, "owner" = 3)
+  user_level <- max(permission_levels[result$permission_level], na.rm = TRUE)
+  required_level_num <- permission_levels[required_level]
+  
+  return(user_level >= required_level_num)
+}
+
+# Get user's projects
+get_user_projects <- function(pool, user_id) {
+  query <- "
+    SELECT DISTINCT p.id, p.project_name, p.date, p.owner, 
+           COALESCE(pp.permission_level, 'owner') as permission_level,
+           (SELECT COUNT(*) FROM source WHERE project_id = p.id AND status = 1) as file_count,
+           (SELECT COUNT(*) FROM coding WHERE project_id = p.id AND status = 1) as coding_count
+    FROM project p
+    LEFT JOIN project_permissions pp ON p.id = pp.project_id AND pp.user_id = ?
+    WHERE p.created_by = ? OR pp.user_id = ?
+    ORDER BY p.date DESC
+  "
+  
+  db_execute_query(pool, query, list(user_id, user_id, user_id))
+}
+
+# Create new project
+create_project <- function(pool, project_name, user_id, owner_name) {
+  # Check if project name already exists for this user
+  check_query <- "
+    SELECT COUNT(*) as count 
+    FROM project p 
+    LEFT JOIN project_permissions pp ON p.id = pp.project_id 
+    WHERE p.project_name = ? AND (p.created_by = ? OR pp.user_id = ?)
+  "
+  
+  existing <- db_execute_query(pool, check_query, list(project_name, user_id, user_id))
+  
+  if (!is.null(existing) && existing$count[1] > 0) {
+    return(list(success = FALSE, message = "Project name already exists"))
   }
   
-  cat("\n")
+  # Create new project
+  insert_query <- "
+    INSERT INTO project (project_name, owner, created_by, date, status) 
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP, 1)
+  "
   
-  # Test database connection and create tables
-  if (!test_database_connection()) {
-    stop("Database connection failed or schema setup incomplete. Please check your database configuration.")
+  tryCatch({
+    result <- pool::dbExecute(pool, insert_query, list(project_name, owner_name, user_id))
+    
+    # Get the new project ID
+    project_id <- pool::dbGetQuery(pool, "SELECT LAST_INSERT_ID() as id")$id[1]
+    
+    return(list(success = TRUE, project_id = project_id, message = "Project created successfully"))
+  }, error = function(e) {
+    return(list(success = FALSE, message = paste("Error creating project:", e$message)))
+  })
+}
+
+# Get project files
+get_project_files <- function(pool, project_id, user_id) {
+  if (!check_project_permission(pool, user_id, project_id)) {
+    return(NULL)
   }
   
-  cat("\n✅ Startup validation complete - ready to launch!\n")
-  cat(paste(rep("=", 50), collapse = ""), "\n\n")
+  query <- "
+    SELECT id, name, owner, date, 
+           CHAR_LENGTH(file) as file_size,
+           (SELECT COUNT(*) FROM coding WHERE fid = source.id AND status = 1) as coding_count
+    FROM source 
+    WHERE project_id = ? AND status = 1 
+    ORDER BY date DESC
+  "
+  
+  db_execute_query(pool, query, list(project_id))
+}
+
+# Get file content
+get_file_content <- function(pool, file_id, user_id, project_id) {
+  if (!check_project_permission(pool, user_id, project_id)) {
+    return(NULL)
+  }
+  
+  query <- "SELECT id, name, file, memo FROM source WHERE id = ? AND project_id = ? AND status = 1"
+  db_execute_query(pool, query, list(file_id, project_id))
+}
+
+# Get project codes
+get_project_codes <- function(pool, project_id, user_id) {
+  if (!check_project_permission(pool, user_id, project_id)) {
+    return(NULL)
+  }
+  
+  query <- "
+    SELECT f.id, f.name, f.color, f.memo, f.owner, f.date,
+           (SELECT COUNT(*) FROM coding c WHERE c.cid = f.id AND c.status = 1) as usage_count,
+           cc.name as category_name
+    FROM freecode f
+    LEFT JOIN treecode tc ON f.id = tc.cid AND tc.status = 1
+    LEFT JOIN codecat cc ON tc.catid = cc.catid AND cc.status = 1
+    WHERE f.project_id = ? AND f.status = 1
+    ORDER BY f.name
+  "
+  
+  db_execute_query(pool, query, list(project_id))
+}
+
+# Add new code
+add_code <- function(pool, code_name, project_id, user_id, owner_name, color = "#FFFF00", memo = "") {
+  if (!check_project_permission(pool, user_id, project_id, "editor")) {
+    return(list(success = FALSE, message = "Insufficient permissions"))
+  }
+  
+  # Check if code name already exists in project
+  check_query <- "SELECT COUNT(*) as count FROM freecode WHERE name = ? AND project_id = ? AND status = 1"
+  existing <- db_execute_query(pool, check_query, list(code_name, project_id))
+  
+  if (!is.null(existing) && existing$count[1] > 0) {
+    return(list(success = FALSE, message = "Code name already exists"))
+  }
+  
+  # Insert new code
+  insert_query <- "
+    INSERT INTO freecode (name, project_id, owner, color, memo, date, status) 
+    VALUES (?, ?, ?, ?, ?, NOW(), 1)
+  "
+  
+  tryCatch({
+    result <- pool::dbExecute(pool, insert_query, list(code_name, project_id, owner_name, color, memo))
+    code_id <- pool::dbGetQuery(pool, "SELECT LAST_INSERT_ID() as id")$id[1]
+    
+    return(list(success = TRUE, code_id = code_id, message = "Code created successfully"))
+  }, error = function(e) {
+    return(list(success = FALSE, message = paste("Error creating code:", e$message)))
+  })
+}
+
+# Get codings for a file
+get_file_codings <- function(pool, file_id, project_id, user_id) {
+  if (!check_project_permission(pool, user_id, project_id)) {
+    return(NULL)
+  }
+  
+  query <- "
+    SELECT c.rowid, c.cid, c.seltext, c.selfirst, c.selend, c.memo as coding_memo,
+           f.name as code_name, f.color, c.owner, c.date
+    FROM coding c
+    JOIN freecode f ON c.cid = f.id
+    WHERE c.fid = ? AND c.project_id = ? AND c.status = 1
+    ORDER BY c.selfirst
+  "
+  
+  db_execute_query(pool, query, list(file_id, project_id))
+}
+
+# Add new coding
+add_coding <- function(pool, code_id, file_id, selected_text, start_pos, end_pos, 
+                      project_id, user_id, owner_name, memo = "") {
+  if (!check_project_permission(pool, user_id, project_id, "editor")) {
+    return(list(success = FALSE, message = "Insufficient permissions"))
+  }
+  
+  insert_query <- "
+    INSERT INTO coding (cid, fid, seltext, selfirst, selend, project_id, owner, memo, date, status) 
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 1)
+  "
+  
+  tryCatch({
+    result <- pool::dbExecute(pool, insert_query, 
+                             list(code_id, file_id, selected_text, start_pos, end_pos, 
+                                  project_id, owner_name, memo))
+    coding_id <- pool::dbGetQuery(pool, "SELECT LAST_INSERT_ID() as id")$id[1]
+    
+    return(list(success = TRUE, coding_id = coding_id, message = "Coding added successfully"))
+  }, error = function(e) {
+    return(list(success = FALSE, message = paste("Error adding coding:", e$message)))
+  })
+}
+
+# Search and auto-code function
+auto_code_search <- function(pool, search_term, code_id, project_id, user_id, owner_name, 
+                            file_ids = NULL, case_sensitive = FALSE) {
+  if (!check_project_permission(pool, user_id, project_id, "editor")) {
+    return(list(success = FALSE, message = "Insufficient permissions"))
+  }
+  
+  # Build file filter
+  file_filter <- ""
+  params <- list(project_id)
+  
+  if (!is.null(file_ids) && length(file_ids) > 0) {
+    file_filter <- paste("AND id IN (", paste(rep("?", length(file_ids)), collapse = ","), ")")
+    params <- c(params, file_ids)
+  }
+  
+  # Get files to search
+  files_query <- glue("SELECT id, file FROM source WHERE project_id = ? AND status = 1 {file_filter}")
+  files <- db_execute_query(pool, files_query, params)
+  
+  if (is.null(files) || nrow(files) == 0) {
+    return(list(success = FALSE, message = "No files found"))
+  }
+  
+  codings_added <- 0
+  
+  for (i in 1:nrow(files)) {
+    file_content <- files$file[i]
+    file_id <- files$id[i]
+    
+    # Perform search
+    if (case_sensitive) {
+      matches <- gregexpr(search_term, file_content, perl = TRUE)
+    } else {
+      matches <- gregexpr(search_term, file_content, ignore.case = TRUE, perl = TRUE)
+    }
+    
+    if (matches[[1]][1] != -1) {
+      for (match_start in matches[[1]]) {
+        match_end <- match_start + attr(matches[[1]], "match.length")[which(matches[[1]] == match_start)] - 1
+        selected_text <- substr(file_content, match_start, match_end)
+        
+        # Check for overlapping codings
+        overlap_query <- "
+          SELECT COUNT(*) as count FROM coding 
+          WHERE fid = ? AND status = 1 AND 
+                ((selfirst <= ? AND selend >= ?) OR 
+                 (selfirst <= ? AND selend >= ?) OR
+                 (selfirst >= ? AND selend <= ?))
+        "
+        
+        overlap_result <- db_execute_query(pool, overlap_query, 
+                                         list(file_id, match_start, match_start, 
+                                              match_end, match_end, match_start, match_end))
+        
+        # Only add if no overlap
+        if (is.null(overlap_result) || overlap_result$count[1] == 0) {
+          result <- add_coding(pool, code_id, file_id, selected_text, match_start, match_end,
+                              project_id, user_id, owner_name, "Auto-coded")
+          if (result$success) {
+            codings_added <- codings_added + 1
+          }
+        }
+      }
+    }
+  }
+  
+  return(list(success = TRUE, message = paste("Added", codings_added, "new codings")))
+}
+
+# Export project data
+export_project_data <- function(pool, project_id, user_id, format = "csv") {
+  if (!check_project_permission(pool, user_id, project_id)) {
+    return(NULL)
+  }
+  
+  # Main export query - get all codings with related information
+  query <- "
+    SELECT 
+      p.project_name,
+      s.name as file_name,
+      f.name as code_name,
+      cc.name as code_category,
+      c.seltext as coded_text,
+      c.selfirst as start_position,
+      c.selend as end_position,
+      c.memo as coding_memo,
+      c.owner as coded_by,
+      c.date as coding_date,
+      s.memo as file_memo,
+      f.memo as code_memo
+    FROM coding c
+    JOIN source s ON c.fid = s.id
+    JOIN freecode f ON c.cid = f.id
+    JOIN project p ON c.project_id = p.id
+    LEFT JOIN treecode tc ON f.id = tc.cid AND tc.status = 1
+    LEFT JOIN codecat cc ON tc.catid = cc.catid AND cc.status = 1
+    WHERE c.project_id = ? AND c.status = 1
+    ORDER BY s.name, c.selfirst
+  "
+  
+  db_execute_query(pool, query, list(project_id))
+}
+
+# Database health check
+check_database_connection <- function(pool) {
+  tryCatch({
+    result <- pool::dbGetQuery(pool, "SELECT 1 as test")
+    return(list(success = TRUE, message = "Database connection OK"))
+  }, error = function(e) {
+    return(list(success = FALSE, message = paste("Database connection failed:", e$message)))
+  })
 }
