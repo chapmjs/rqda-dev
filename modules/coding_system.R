@@ -164,5 +164,5 @@ check_system_requirements <- function() {
 # Run system check
 check_system_requirements()
 
-cat("\n" %R% 50, "\n")
+cat(paste(rep("=", 50), collapse = ""), "\n")
 cat("Package installation script completed.\n")
