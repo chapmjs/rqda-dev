@@ -191,8 +191,21 @@ ui <- dashboardPage(
 
 # Define Server
 server <- function(input, output, session) {
-  # Initialize database connection
-  db_pool <- db_connect_pool(DB_CONFIG)
+  # Initialize database connection with automatic table creation
+  db_pool <- tryCatch({
+    pool <- db_connect_pool(DB_CONFIG)
+    
+    # Create tables if they don't exist
+    cat("Initializing database schema...\n")
+    create_tables_if_not_exist(pool)
+    
+    pool
+  }, error = function(e) {
+    cat("❌ Database initialization failed:", e$message, "\n")
+    showNotification("Database connection failed. Please check your configuration.", 
+                     type = "error", duration = NULL)
+    NULL
+  })
   
   # Authentication
   auth_result <- callModule(authenticationServer, "auth", db_pool)
