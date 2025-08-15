@@ -1,36 +1,36 @@
 # app.R - Main Shiny Application File
 # RQDA Online - Web-based Qualitative Data Analysis
 
-# Load required libraries
+# ---- Packages ----
 suppressPackageStartupMessages({
-	library(shiny)
-	library(shinydashboard)
-	library(DT)
-	library(RMySQL)
-	library(DBI)
-	library(shinyjs)
-	library(shinyWidgets)
-	library(shinycssloaders)
-	library(stringr)
-	library(dplyr)
-	library(plotly)
+  library(shiny)
+  library(shinydashboard)
+  library(DT)
+  library(RMySQL)
+  library(DBI)
+  library(shinyjs)
+  library(shinyWidgets)
+  library(shinycssloaders)
+  library(stringr)
+  library(dplyr)
+  library(plotly)
+  library(pool)
 })
 
-# Sources (make sure these files exist in your repo)
+# ---- Sources (these must exist) ----
 source("config.R")                     # get_db_config()
 source("modules/logging.R")            # log_info/log_warn/log_error/...
 source("modules/db_helpers.R")         # db_get()/db_exec()
 source("modules/database.R")           # db_connect_pool()/db_disconnect_pool()
 
-# Source modules
-source("modules/database.R")
+# ---- App-specific modules ----
 source("modules/authentication.R")
 source("modules/project_management.R")
 source("modules/file_management.R")
 source("modules/coding_system.R")
 source("modules/analysis_tools.R")
 
-# App options
+# ---- Options ----
 options(shiny.maxRequestSize = 50 * 1024^2)  # 50MB uploads
 options(stringsAsFactors = FALSE)
 
@@ -43,7 +43,6 @@ init_pool <- function() {
   if (is.null(pool)) {
     log_info("Initializing DB pool...")
     pool <<- db_connect_pool(DB_CONFIG)
-    # Close the pool when the R process hosting Shiny stops
     shiny::onStop(function() {
       log_info("Shutting down DB pool...")
       try(db_disconnect_pool(pool), silent = TRUE)
@@ -52,21 +51,22 @@ init_pool <- function() {
 }
 init_pool()
 
-# Optional: capture SSL cipher status (handy to show in UI if you like)
+# Optional: capture SSL cipher status (handy to show in the UI)
 db_ssl_cipher <- tryCatch({
   val <- DBI::dbGetQuery(pool, "SHOW STATUS LIKE 'Ssl_cipher'")
   if (nrow(val) && nzchar(val$Value[1])) val$Value[1] else ""
 }, error = function(e) "")
 
-# Make shared objects easy to reach from modules:
+# Make shared objects easy to reach from modules (if needed)
 assign("POOL", pool, envir = .GlobalEnv)
 assign("DB_CONFIG", DB_CONFIG, envir = .GlobalEnv)
 assign("DB_SSL_CIPHER", db_ssl_cipher, envir = .GlobalEnv)
 
-# Define UI
+# -------------------------------------------------------------------
+# UI
 ui <- dashboardPage(
   skin = "blue",
-  
+
   # Header
   dashboardHeader(
     title = "RQDA Online",
@@ -77,32 +77,36 @@ ui <- dashboardPage(
       textOutput("current_user")
     )
   ),
-  
-  # Sidebar
+
+  # Sidebar (Font Awesome 4 icon names for shinydashboard)
   dashboardSidebar(
     width = 250,
     sidebarMenu(
       id = "sidebar",
-      menuItem("Dashboard", tabName = "dashboard", icon = icon("tachometer-alt")),
-      menuItem("Projects", tabName = "projects", icon = icon("folder-open")),
-      menuItem("Files", tabName = "files", icon = icon("file-text")),
-      menuItem("Codes", tabName = "codes", icon = icon("tags")),
-      menuItem("Coding", tabName = "coding", icon = icon("highlight")),
-      menuItem("Analysis", tabName = "analysis", icon = icon("chart-bar")),
-      menuItem("Export", tabName = "export", icon = icon("download")),
+      menuItem("Dashboard", tabName = "dashboard", icon = icon("tachometer")),
+      menuItem("Projects",  tabName = "projects",  icon = icon("folder-open")),
+      menuItem("Files",     tabName = "files",     icon = icon("file-text-o")),
+      menuItem("Codes",     tabName = "codes",     icon = icon("tags")),
+      menuItem("Coding",    tabName = "coding",    icon = icon("paint-brush")),
+      menuItem("Analysis",  tabName = "analysis",  icon = icon("bar-chart")),
+      menuItem("Export",    tabName = "export",    icon = icon("download")),
       br(),
       conditionalPanel(
         condition = "output.user_authenticated",
-        actionButton("logout", "Logout", icon = icon("sign-out-alt"), 
-                    class = "btn-warning", style = "margin: 10px;")
+        actionButton(
+          "logout", "Logout",
+          icon = icon("sign-out"),
+          class = "btn-warning",
+          style = "margin: 10px;"
+        )
       )
     )
   ),
-  
+
   # Body
   dashboardBody(
     useShinyjs(),
-    
+
     # Custom CSS
     tags$head(
       tags$style(HTML("
@@ -148,20 +152,20 @@ ui <- dashboardPage(
         }
       "))
     ),
-    
+
     # SSL Connection Status Indicator
     div(
       id = "ssl_status",
       class = "connection-status",
       uiOutput("ssl_status_indicator")
     ),
-    
+
     # Conditional UI based on authentication
     conditionalPanel(
       condition = "!output.user_authenticated",
       authenticationUI("auth")
     ),
-    
+
     conditionalPanel(
       condition = "output.user_authenticated",
       tabItems(
@@ -170,8 +174,8 @@ ui <- dashboardPage(
           tabName = "dashboard",
           fluidRow(
             box(
-              title = "Welcome to RQDA Online", 
-              status = "primary", 
+              title = "Welcome to RQDA Online",
+              status = "primary",
               solidHeader = TRUE,
               width = 8,
               h4("Web-based Qualitative Data Analysis"),
@@ -190,25 +194,25 @@ ui <- dashboardPage(
             )
           )
         ),
-        
+
         # Projects tab
         tabItem(
           tabName = "projects",
           projectManagementUI("project_mgmt")
         ),
-        
+
         # Files tab
         tabItem(
           tabName = "files",
           fileManagementUI("file_mgmt")
         ),
-        
+
         # Codes tab
         tabItem(
           tabName = "codes",
           codingSystemUI("coding_system")
         ),
-        
+
         # Coding tab
         tabItem(
           tabName = "coding",
@@ -223,13 +227,13 @@ ui <- dashboardPage(
             )
           )
         ),
-        
+
         # Analysis tab
         tabItem(
           tabName = "analysis",
           analysisToolsUI("analysis_tools")
         ),
-        
+
         # Export tab
         tabItem(
           tabName = "export",
@@ -248,7 +252,8 @@ ui <- dashboardPage(
   )
 )
 
-# Define Server
+# -------------------------------------------------------------------
+# Server
 server <- function(input, output, session) {
   # Reactive values for connection status
   connection_status <- reactiveValues(
@@ -257,33 +262,27 @@ server <- function(input, output, session) {
     connection_error = NULL,
     pool = NULL
   )
-  
 
-  
+  # Initialize from global pool created at startup
+  connection_status$pool        <- POOL
+  connection_status$ssl_enabled <- nzchar(DB_SSL_CIPHER)
+  connection_status$ssl_cipher  <- if (nzchar(DB_SSL_CIPHER)) DB_SSL_CIPHER else NULL
+
   # SSL Status Indicator
   output$ssl_status_indicator <- renderUI({
     if (connection_status$ssl_enabled) {
-      div(
-        class = "ssl-enabled",
-        icon("lock"), " SSL Enabled"
-      )
+      div(class = "ssl-enabled", icon("lock"), " SSL Enabled")
     } else if (!is.null(connection_status$connection_error)) {
-      div(
-        class = "ssl-disabled",
-        icon("exclamation-triangle"), " Connection Issues"
-      )
+      div(class = "ssl-disabled", icon("exclamation-triangle"), " Connection Issues")
     } else {
-      div(
-        class = "ssl-disabled",
-        icon("unlock"), " SSL Disabled"
-      )
+      div(class = "ssl-disabled", icon("unlock"), " SSL Disabled")
     }
   })
-  
+
   # Connection Details
   output$connection_details <- renderText({
     details <- c()
-    
+
     if (connection_status$ssl_enabled) {
       details <- c(details, "✅ SSL Connection: Active")
       if (!is.null(connection_status$ssl_cipher)) {
@@ -292,13 +291,13 @@ server <- function(input, output, session) {
     } else {
       details <- c(details, "⚠️ SSL Connection: Inactive")
     }
-    
+
     if (!is.null(connection_status$pool)) {
       details <- c(details, "✅ Database Pool: Connected")
-      
+
       # Test basic connectivity
       test_result <- tryCatch({
-        result <- pool::dbGetQuery(connection_status$pool, "SELECT 1 as test")
+        res <- pool::dbGetQuery(connection_status$pool, "SELECT 1 as test")
         "✅ Database Query: Working"
       }, error = function(e) {
         paste("❌ Database Query: Failed -", e$message)
@@ -307,29 +306,27 @@ server <- function(input, output, session) {
     } else {
       details <- c(details, "❌ Database Pool: Not Connected")
     }
-    
+
     if (!is.null(connection_status$connection_error)) {
       details <- c(details, "", "Connection Error:")
       details <- c(details, connection_status$connection_error)
     }
-    
+
     paste(details, collapse = "\n")
   })
-  
-  # Get database pool for use in modules
-  db_pool <- reactive({
-    connection_status$pool
-  })
-  
+
+  # Provide pool to modules
+  db_pool <- reactive({ connection_status$pool })
+
   # Authentication
   auth_result <- callModule(authenticationServer, "auth", db_pool)
-  
-  # Authentication status
+
+  # Authentication status for conditionalPanel
   output$user_authenticated <- reactive({
     !is.null(auth_result$user_id()) && !is.null(db_pool())
   })
   outputOptions(output, "user_authenticated", suspendWhenHidden = FALSE)
-  
+
   # Current user display
   output$current_user <- renderText({
     if (!is.null(auth_result$username())) {
@@ -338,15 +335,15 @@ server <- function(input, output, session) {
       ""
     }
   })
-  
+
   # Project management
   project_data <- callModule(
-    projectManagementServer, 
-    "project_mgmt", 
-    db_pool, 
+    projectManagementServer,
+    "project_mgmt",
+    db_pool,
     auth_result$user_id
   )
-  
+
   # Project summary
   callModule(
     projectSummaryServer,
@@ -355,7 +352,7 @@ server <- function(input, output, session) {
     auth_result$user_id,
     project_data$current_project_id
   )
-  
+
   # File management
   file_data <- callModule(
     fileManagementServer,
@@ -364,7 +361,7 @@ server <- function(input, output, session) {
     auth_result$user_id,
     project_data$current_project_id
   )
-  
+
   # Coding system
   code_data <- callModule(
     codingSystemServer,
@@ -373,7 +370,7 @@ server <- function(input, output, session) {
     auth_result$user_id,
     project_data$current_project_id
   )
-  
+
   # Text coding
   callModule(
     textCodingServer,
@@ -384,7 +381,7 @@ server <- function(input, output, session) {
     file_data$selected_file,
     code_data$codes
   )
-  
+
   # Analysis tools
   callModule(
     analysisToolsServer,
@@ -393,7 +390,7 @@ server <- function(input, output, session) {
     auth_result$user_id,
     project_data$current_project_id
   )
-  
+
   # Export data
   callModule(
     exportDataServer,
@@ -402,13 +399,13 @@ server <- function(input, output, session) {
     auth_result$user_id,
     project_data$current_project_id
   )
-  
-  # Logout functionality
+
+  # Logout = hard reload
   observeEvent(input$logout, {
     session$reload()
   })
-  
 }
 
+# -------------------------------------------------------------------
 # Run the application
 shinyApp(ui = ui, server = server)
