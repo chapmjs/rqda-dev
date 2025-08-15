@@ -83,24 +83,24 @@ ui <- dashboardPage(
     width = 250,
     sidebarMenu(
       id = "sidebar",
-      menuItem("Dashboard", tabName = "dashboard", icon = icon("tachometer")),
+      menuItem("Dashboard", tabName = "dashboard", icon = icon("gauge")),        # was tachometer
       menuItem("Projects",  tabName = "projects",  icon = icon("folder-open")),
-      menuItem("Files",     tabName = "files",     icon = icon("file-text-o")),
+      menuItem("Files",     tabName = "files",     icon = icon("file-lines")),    # was file-text-o (FA4)
       menuItem("Codes",     tabName = "codes",     icon = icon("tags")),
-      menuItem("Coding",    tabName = "coding",    icon = icon("paint-brush")),
-      menuItem("Analysis",  tabName = "analysis",  icon = icon("bar-chart")),
+      menuItem("Coding",    tabName = "coding",    icon = icon("highlighter")),   # was highlight
+      menuItem("Analysis",  tabName = "analysis",  icon = icon("chart-bar")),     # FA6 still supports this
       menuItem("Export",    tabName = "export",    icon = icon("download")),
       br(),
       conditionalPanel(
         condition = "output.user_authenticated",
         actionButton(
           "logout", "Logout",
-          icon = icon("sign-out"),
-          class = "btn-warning",
-          style = "margin: 10px;"
+          icon  = icon("right-from-bracket"),  # was sign-out / sign-out-alt
+          class = "btn-warning", style = "margin: 10px;"
         )
       )
     )
+
   ),
 
   # Body
