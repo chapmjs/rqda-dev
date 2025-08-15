@@ -7,6 +7,11 @@ library(shinyWidgets)
 library(digest)
 library(DT)
 
+# Source database functions if not already loaded
+if (!exists("db_execute_query")) {
+  source("modules/database.R")
+}
+
 # Authentication UI
 authenticationUI <- function(id) {
   ns <- NS(id)
