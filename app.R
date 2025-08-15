@@ -22,12 +22,13 @@ source("modules/file_management.R")
 source("modules/coding_system.R")
 source("modules/analysis_tools.R")
 
-# Database configuration
+# Database configuration - all parameters from environment variables
 DB_CONFIG <- list(
-  host = "mexico.bbfarm.org",
-  dbname = "rqda_online",
-  username = Sys.getenv("MYSQL_USERNAME"), # Set as environment variable
-  password = Sys.getenv("MYSQL_PASSWORD")  # Set as environment variable
+  host = Sys.getenv("DB_HOST", "localhost"),           # Default to localhost if not set
+  dbname = Sys.getenv("DB_NAME", "rqda_online"),       # Default database name
+  username = Sys.getenv("DB_USER"),                    # MySQL username
+  password = Sys.getenv("DB_PASS"),                    # MySQL password
+  port = as.integer(Sys.getenv("DB_PORT", "3306"))     # MySQL port, default 3306
 )
 
 # Define UI
