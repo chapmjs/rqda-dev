@@ -374,13 +374,6 @@ generate_env_file <- function(file_path = ".Renviron") {
 # WARNING: Keep this file secure and do not commit to version control
 # NOTE: For Posit Connect deployment, set these as environment variables in app settings
 
-# Database Configuration
-DB_HOST=mexico.bbfarm.org
-DB_NAME=chapmjs_rqdadb
-DB_USER=your_mysql_username
-DB_PASS=your_mysql_password
-DB_PORT=3306
-
 # Optional Configuration
 # SHINY_LOG_LEVEL=INFO
 # APP_ENV=development
