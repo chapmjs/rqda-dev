@@ -258,92 +258,7 @@ server <- function(input, output, session) {
     pool = NULL
   )
   
-  # Initialize database connection with SSL and automatic table creation
-  observe({
-    isolate({
-      cat("🔗 Initializing SSL database connection...\n")
-      
-      connection_status$pool <- tryCatch({
-        # Attempt SSL connection
-        pool <- db_connect_pool(DB_CONFIG)
-        
-        # Test SSL status
-        ssl_check <- tryCatch({
-          ssl_status <- pool::dbGetQuery(pool, "SHOW STATUS LIKE 'Ssl_cipher'")
-          if (nrow(ssl_status) > 0 && ssl_status$Value != "") {
-            connection_status$ssl_enabled <- TRUE
-            connection_status$ssl_cipher <- ssl_status$Value
-            cat("✅ SSL connection established with cipher:", ssl_status$Value, "\n")
-            TRUE
-          } else {
-            connection_status$ssl_enabled <- FALSE
-            cat("⚠️ Connection established but SSL not active\n")
-            FALSE
-          }
-        }, error = function(e) {
-          connection_status$ssl_enabled <- FALSE
-          cat("⚠️ Could not verify SSL status:", e$message, "\n")
-          FALSE
-        })
-        
-        # Create tables if they don't exist
-        cat("📋 Initializing database schema...\n")
-        table_result <- create_tables_if_not_exist(pool)
-        
-        if (table_result) {
-          cat("✅ Database schema initialized successfully\n")
-        } else {
-          cat("⚠️ Some database tables could not be created\n")
-        }
-        
-        connection_status$connection_error <- NULL
-        pool
-        
-      }, error = function(e) {
-        cat("❌ Database initialization failed:", e$message, "\n")
-        connection_status$connection_error <- e$message
-        connection_status$ssl_enabled <- FALSE
-        
-        # Try fallback connection without SSL
-        cat("🔄 Attempting fallback connection without SSL...\n")
-        tryCatch({
-          # Create a temporary config without SSL for fallback
-          fallback_config <- DB_CONFIG
-          
-          fallback_pool <- pool::dbPool(
-            drv = RMySQL::MySQL(),
-            host = fallback_config$host,
-            dbname = fallback_config$dbname,
-            username = fallback_config$username,
-            password = fallback_config$password,
-            port = ifelse(is.null(fallback_config$port), 3306, fallback_config$port),
-            encoding = "utf8mb4",
-            minSize = 1,
-            maxSize = 10
-          )
-          
-          cat("✅ Fallback connection (no SSL) established\n")
-          connection_status$connection_error <- paste("SSL failed, using non-SSL connection:", e$message)
-          
-          # Create tables if they don't exist
-          create_tables_if_not_exist(fallback_pool)
-          
-          fallback_pool
-          
-        }, error = function(e2) {
-          cat("❌ All connection attempts failed:", e2$message, "\n")
-          connection_status$connection_error <- paste("All connections failed:", e2$message)
-          
-          showNotification(
-            paste("Database connection failed:", e2$message, "Please check your configuration."), 
-            type = "error", 
-            duration = NULL
-          )
-          NULL
-        })
-      })
-    })
-  })
+
   
   # SSL Status Indicator
   output$ssl_status_indicator <- renderUI({
@@ -493,17 +408,6 @@ server <- function(input, output, session) {
     session$reload()
   })
   
-  # Clean up database connections on session end
-  session$onSessionEnded(function() {
-    if (!is.null(connection_status$pool)) {
-      tryCatch({
-        pool::poolClose(connection_status$pool)
-        cat("🔌 Database connection closed\n")
-      }, error = function(e) {
-        cat("⚠️ Error closing database connection:", e$message, "\n")
-      })
-    }
-  })
 }
 
 # Run the application
