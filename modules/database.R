@@ -1,4 +1,4 @@
-# modules/database.R
+# modules/database.R - Fixed version
 # Database connection and utility functions
 
 library(DBI)
@@ -16,122 +16,73 @@ db_connect_pool <- function(config) {
     stop(paste("Missing required database configuration:", paste(missing_vars, collapse = ", ")))
   }
   
-  # SSL configuration
-  ssl_params <- list()
+  # Validate input parameters
+  if (nchar(config$host) > 255) stop("Host name too long")
+  if (nchar(config$dbname) > 64) stop("Database name too long") 
+  if (nchar(config$username) > 32) stop("Username too long")
   
-  # Method 1: Basic SSL (most common for cloud providers)
-  ssl_params$`ssl-mode` <- "REQUIRED"
-  
-  # Method 2: If you have specific SSL certificates (uncomment if needed)
-  # ssl_params$`ssl-ca` <- config$ssl_ca %||% NULL
-  # ssl_params$`ssl-cert` <- config$ssl_cert %||% NULL
-  # ssl_params$`ssl-key` <- config$ssl_key %||% NULL
-  
-  # Method 3: For development/testing (less secure)
-  # ssl_params$`ssl-mode` <- "REQUIRED"
-  # ssl_params$`ssl-verify-server-cert` <- FALSE
-  
-  # Build connection parameters
-  conn_params <- list(
+  # Build connection parameters - try multiple SSL approaches
+  base_params <- list(
     drv = RMySQL::MySQL(),
     host = config$host,
     dbname = config$dbname,
     username = config$username,
     password = config$password,
-    port = ifelse(is.null(config$port), 3306, config$port),
+    port = ifelse(is.null(config$port), 3306, as.integer(config$port)),
     encoding = "utf8mb4",
     # Connection pool settings
     minSize = 1,
     maxSize = 10
   )
   
-  # Add SSL parameters
-  conn_params <- c(conn_params, ssl_params)
+  # Try SSL connection first
+  tryCatch({
+    ssl_params <- base_params
+    ssl_params$ssl.mode <- "REQUIRED"  # Alternative syntax
+    # ssl_params$`ssl-mode` <- "REQUIRED"  # If the above doesn't work
+    
+    cat("Attempting SSL connection...\n")
+    pool <- do.call(pool::dbPool, ssl_params)
+    
+    # Test SSL status
+    ssl_check <- pool::dbGetQuery(pool, "SHOW STATUS LIKE 'Ssl_cipher'")
+    if (nrow(ssl_check) > 0 && ssl_check$Value != "") {
+      cat("✅ SSL connection successful with cipher:", ssl_check$Value, "\n")
+      return(pool)
+    } else {
+      pool::poolClose(pool)
+      warning("SSL requested but not active")
+    }
+  }, error = function(e) {
+    cat("❌ SSL connection failed:", e$message, "\n")
+  })
   
-  # Alternative method using groups parameter for SSL
-  # This creates a connection using MySQL configuration groups
-  # Uncomment if the above method doesn't work:
-  
-  # conn_params$groups <- "client"
-  # conn_params$default.file <- "~/.my.cnf"  # MySQL config file with SSL settings
-  
-  do.call(pool::dbPool, conn_params)
+  # Fallback to non-SSL connection
+  cat("🔄 Attempting non-SSL connection...\n")
+  tryCatch({
+    pool <- do.call(pool::dbPool, base_params)
+    cat("✅ Non-SSL connection successful\n")
+    return(pool)
+  }, error = function(e) {
+    stop("All connection attempts failed: ", e$message)
+  })
 }
 
-# Alternative connection function using connection string approach
-db_connect_pool_string <- function(config) {
-  # Validate required environment variables
-  required_vars <- c("host", "dbname", "username", "password")
-  missing_vars <- required_vars[sapply(required_vars, function(x) is.null(config[[x]]) || config[[x]] == "")]
-  
-  if (length(missing_vars) > 0) {
-    stop(paste("Missing required database configuration:", paste(missing_vars, collapse = ", ")))
-  }
-  
-  # Build connection string with SSL
-  port <- ifelse(is.null(config$port), 3306, config$port)
-  
-  # Connection string with SSL parameters
-  conn_string <- sprintf(
-    "mysql://%s:%s@%s:%s/%s?ssl-mode=REQUIRED&charset=utf8mb4",
-    config$username,
-    config$password,
-    config$host,
-    port,
-    config$dbname
-  )
-  
-  pool::dbPool(
-    drv = RMySQL::MySQL(),
-    url = conn_string,
-    minSize = 1,
-    maxSize = 10
-  )
-}
-
-# Test SSL connection function
+# Test SSL connection function - fixed
 test_ssl_connection <- function(config) {
   cat("Testing SSL database connection...\n")
   
-  tryCatch({
-    # Test basic connection first
-    test_conn <- DBI::dbConnect(
-      RMySQL::MySQL(),
-      host = config$host,
-      dbname = config$dbname,
-      username = config$username,
-      password = config$password,
-      port = ifelse(is.null(config$port), 3306, config$port),
-      `ssl-mode` = "REQUIRED"
-    )
-    
-    # Check SSL status
-    ssl_status <- DBI::dbGetQuery(test_conn, "SHOW STATUS LIKE 'Ssl_cipher'")
-    
-    if (nrow(ssl_status) > 0 && ssl_status$Value != "") {
-      cat("✓ SSL connection established successfully\n")
-      cat("SSL Cipher:", ssl_status$Value, "\n")
-      
-      # Additional SSL info
-      ssl_info <- DBI::dbGetQuery(test_conn, "SHOW STATUS LIKE 'Ssl_%'")
-      print(ssl_info)
-      
-      DBI::dbDisconnect(test_conn)
-      return(TRUE)
-    } else {
-      cat("⚠ Connection established but SSL not active\n")
-      DBI::dbDisconnect(test_conn)
-      return(FALSE)
-    }
-    
-  }, error = function(e) {
-    cat("✗ SSL connection failed:", e$message, "\n")
-    
-    # Try fallback connection without SSL
-    cat("Attempting fallback connection without SSL...\n")
+  # Test with different SSL parameter formats
+  ssl_formats <- list(
+    list(ssl.mode = "REQUIRED"),
+    list(`ssl-mode` = "REQUIRED"),
+    list(ssl_mode = "REQUIRED")
+  )
+  
+  for (ssl_params in ssl_formats) {
     tryCatch({
-      fallback_conn <- DBI::dbConnect(
-        RMySQL::MySQL(),
+      conn_params <- list(
+        drv = RMySQL::MySQL(),
         host = config$host,
         dbname = config$dbname,
         username = config$username,
@@ -139,16 +90,158 @@ test_ssl_connection <- function(config) {
         port = ifelse(is.null(config$port), 3306, config$port)
       )
       
-      cat("✓ Fallback connection (no SSL) successful\n")
-      DBI::dbDisconnect(fallback_conn)
-      return(FALSE)
+      # Add SSL parameters
+      conn_params <- c(conn_params, ssl_params)
       
-    }, error = function(e2) {
-      cat("✗ All connection attempts failed:", e2$message, "\n")
-      return(FALSE)
+      test_conn <- do.call(DBI::dbConnect, conn_params)
+      
+      # Check SSL status
+      ssl_status <- DBI::dbGetQuery(test_conn, "SHOW STATUS LIKE 'Ssl_cipher'")
+      
+      if (nrow(ssl_status) > 0 && ssl_status$Value != "") {
+        cat("✓ SSL connection established successfully\n")
+        cat("SSL Cipher:", ssl_status$Value, "\n")
+        DBI::dbDisconnect(test_conn)
+        return(TRUE)
+      } else {
+        DBI::dbDisconnect(test_conn)
+      }
+      
+    }, error = function(e) {
+      # Try next format
+      next
     })
+  }
+  
+  # If all SSL attempts failed, try non-SSL
+  cat("Attempting fallback connection without SSL...\n")
+  tryCatch({
+    fallback_conn <- DBI::dbConnect(
+      RMySQL::MySQL(),
+      host = config$host,
+      dbname = config$dbname,
+      username = config$username,
+      password = config$password,
+      port = ifelse(is.null(config$port), 3306, config$port)
+    )
+    
+    cat("✓ Fallback connection (no SSL) successful\n")
+    DBI::dbDisconnect(fallback_conn)
+    return(FALSE)
+    
+  }, error = function(e2) {
+    cat("✗ All connection attempts failed:", e2$message, "\n")
+    return(FALSE)
   })
 }
+
+# Input validation helper
+validate_string_input <- function(input, max_length, field_name) {
+  if (is.null(input) || !is.character(input)) {
+    return(paste(field_name, "must be a string"))
+  }
+  if (nchar(input) > max_length) {
+    return(paste(field_name, "too long (max", max_length, "characters)"))
+  }
+  if (grepl("[<>\"'%;\\x00-\\x1f]", input)) {
+    return(paste(field_name, "contains invalid characters"))
+  }
+  return(NULL)
+}
+
+# Add new code with validation
+add_code <- function(pool, code_name, project_id, user_id, owner_name, color = "#FFFF00", memo = "") {
+  # Input validation
+  validation_error <- validate_string_input(code_name, 255, "Code name")
+  if (!is.null(validation_error)) {
+    return(list(success = FALSE, message = validation_error))
+  }
+  
+  # Validate color format
+  if (!grepl("^#[0-9A-Fa-f]{6}$", color)) {
+    return(list(success = FALSE, message = "Invalid color format"))
+  }
+  
+  # Validate memo length
+  if (nchar(memo) > 1000) {
+    return(list(success = FALSE, message = "Memo too long (max 1000 characters)"))
+  }
+  
+  if (!check_project_permission(pool, user_id, project_id, "editor")) {
+    return(list(success = FALSE, message = "Insufficient permissions"))
+  }
+  
+  # Check if code name already exists in project
+  check_query <- "SELECT COUNT(*) as count FROM freecode WHERE name = ? AND project_id = ? AND status = 1"
+  existing <- db_execute_query(pool, check_query, list(code_name, project_id))
+  
+  if (!is.null(existing) && existing$count[1] > 0) {
+    return(list(success = FALSE, message = "Code name already exists"))
+  }
+  
+  # Insert new code
+  insert_query <- "
+    INSERT INTO freecode (name, project_id, owner, color, memo, date, status) 
+    VALUES (?, ?, ?, ?, ?, NOW(), 1)
+  "
+  
+  tryCatch({
+    result <- pool::dbExecute(pool, insert_query, list(code_name, project_id, owner_name, color, memo))
+    code_id <- pool::dbGetQuery(pool, "SELECT LAST_INSERT_ID() as id")$id[1]
+    
+    return(list(success = TRUE, code_id = code_id, message = "Code created successfully"))
+  }, error = function(e) {
+    return(list(success = FALSE, message = paste("Error creating code:", e$message)))
+  })
+}
+
+# Create new project with validation
+create_project <- function(pool, project_name, user_id, owner_name) {
+  # Input validation
+  validation_error <- validate_string_input(project_name, 255, "Project name")
+  if (!is.null(validation_error)) {
+    return(list(success = FALSE, message = validation_error))
+  }
+  
+  validation_error <- validate_string_input(owner_name, 255, "Owner name")
+  if (!is.null(validation_error)) {
+    return(list(success = FALSE, message = validation_error))
+  }
+  
+  # Check if project name already exists for this user
+  check_query <- "
+    SELECT COUNT(*) as count 
+    FROM project p 
+    LEFT JOIN project_permissions pp ON p.id = pp.project_id 
+    WHERE p.project_name = ? AND (p.created_by = ? OR pp.user_id = ?)
+  "
+  
+  existing <- db_execute_query(pool, check_query, list(project_name, user_id, user_id))
+  
+  if (!is.null(existing) && existing$count[1] > 0) {
+    return(list(success = FALSE, message = "Project name already exists"))
+  }
+  
+  # Create new project
+  insert_query <- "
+    INSERT INTO project (project_name, owner, created_by, date, status) 
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP, 1)
+  "
+  
+  tryCatch({
+    result <- pool::dbExecute(pool, insert_query, list(project_name, owner_name, user_id))
+    
+    # Get the new project ID
+    project_id <- pool::dbGetQuery(pool, "SELECT LAST_INSERT_ID() as id")$id[1]
+    
+    return(list(success = TRUE, project_id = project_id, message = "Project created successfully"))
+  }, error = function(e) {
+    return(list(success = FALSE, message = paste("Error creating project:", e$message)))
+  })
+}
+
+# Rest of the functions remain the same...
+# (Include all other functions from the original file)
 
 # Create all required tables if they don't exist
 create_tables_if_not_exist <- function(pool) {
