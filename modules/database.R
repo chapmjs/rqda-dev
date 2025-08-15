@@ -6,7 +6,7 @@ library(RMySQL)
 library(pool)
 library(glue)
 
-# Create database connection pool
+# Create database connection pool with SSL support
 db_connect_pool <- function(config) {
   # Validate required environment variables
   required_vars <- c("host", "dbname", "username", "password")
@@ -16,7 +16,23 @@ db_connect_pool <- function(config) {
     stop(paste("Missing required database configuration:", paste(missing_vars, collapse = ", ")))
   }
   
-  pool::dbPool(
+  # SSL configuration
+  ssl_params <- list()
+  
+  # Method 1: Basic SSL (most common for cloud providers)
+  ssl_params$`ssl-mode` <- "REQUIRED"
+  
+  # Method 2: If you have specific SSL certificates (uncomment if needed)
+  # ssl_params$`ssl-ca` <- config$ssl_ca %||% NULL
+  # ssl_params$`ssl-cert` <- config$ssl_cert %||% NULL
+  # ssl_params$`ssl-key` <- config$ssl_key %||% NULL
+  
+  # Method 3: For development/testing (less secure)
+  # ssl_params$`ssl-mode` <- "REQUIRED"
+  # ssl_params$`ssl-verify-server-cert` <- FALSE
+  
+  # Build connection parameters
+  conn_params <- list(
     drv = RMySQL::MySQL(),
     host = config$host,
     dbname = config$dbname,
@@ -28,6 +44,110 @@ db_connect_pool <- function(config) {
     minSize = 1,
     maxSize = 10
   )
+  
+  # Add SSL parameters
+  conn_params <- c(conn_params, ssl_params)
+  
+  # Alternative method using groups parameter for SSL
+  # This creates a connection using MySQL configuration groups
+  # Uncomment if the above method doesn't work:
+  
+  # conn_params$groups <- "client"
+  # conn_params$default.file <- "~/.my.cnf"  # MySQL config file with SSL settings
+  
+  do.call(pool::dbPool, conn_params)
+}
+
+# Alternative connection function using connection string approach
+db_connect_pool_string <- function(config) {
+  # Validate required environment variables
+  required_vars <- c("host", "dbname", "username", "password")
+  missing_vars <- required_vars[sapply(required_vars, function(x) is.null(config[[x]]) || config[[x]] == "")]
+  
+  if (length(missing_vars) > 0) {
+    stop(paste("Missing required database configuration:", paste(missing_vars, collapse = ", ")))
+  }
+  
+  # Build connection string with SSL
+  port <- ifelse(is.null(config$port), 3306, config$port)
+  
+  # Connection string with SSL parameters
+  conn_string <- sprintf(
+    "mysql://%s:%s@%s:%s/%s?ssl-mode=REQUIRED&charset=utf8mb4",
+    config$username,
+    config$password,
+    config$host,
+    port,
+    config$dbname
+  )
+  
+  pool::dbPool(
+    drv = RMySQL::MySQL(),
+    url = conn_string,
+    minSize = 1,
+    maxSize = 10
+  )
+}
+
+# Test SSL connection function
+test_ssl_connection <- function(config) {
+  cat("Testing SSL database connection...\n")
+  
+  tryCatch({
+    # Test basic connection first
+    test_conn <- DBI::dbConnect(
+      RMySQL::MySQL(),
+      host = config$host,
+      dbname = config$dbname,
+      username = config$username,
+      password = config$password,
+      port = ifelse(is.null(config$port), 3306, config$port),
+      `ssl-mode` = "REQUIRED"
+    )
+    
+    # Check SSL status
+    ssl_status <- DBI::dbGetQuery(test_conn, "SHOW STATUS LIKE 'Ssl_cipher'")
+    
+    if (nrow(ssl_status) > 0 && ssl_status$Value != "") {
+      cat("✓ SSL connection established successfully\n")
+      cat("SSL Cipher:", ssl_status$Value, "\n")
+      
+      # Additional SSL info
+      ssl_info <- DBI::dbGetQuery(test_conn, "SHOW STATUS LIKE 'Ssl_%'")
+      print(ssl_info)
+      
+      DBI::dbDisconnect(test_conn)
+      return(TRUE)
+    } else {
+      cat("⚠ Connection established but SSL not active\n")
+      DBI::dbDisconnect(test_conn)
+      return(FALSE)
+    }
+    
+  }, error = function(e) {
+    cat("✗ SSL connection failed:", e$message, "\n")
+    
+    # Try fallback connection without SSL
+    cat("Attempting fallback connection without SSL...\n")
+    tryCatch({
+      fallback_conn <- DBI::dbConnect(
+        RMySQL::MySQL(),
+        host = config$host,
+        dbname = config$dbname,
+        username = config$username,
+        password = config$password,
+        port = ifelse(is.null(config$port), 3306, config$port)
+      )
+      
+      cat("✓ Fallback connection (no SSL) successful\n")
+      DBI::dbDisconnect(fallback_conn)
+      return(FALSE)
+      
+    }, error = function(e2) {
+      cat("✗ All connection attempts failed:", e2$message, "\n")
+      return(FALSE)
+    })
+  })
 }
 
 # Create all required tables if they don't exist
