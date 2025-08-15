@@ -449,7 +449,7 @@ create_project <- function(pool, project_name, user_id, owner_name) {
   # Create new project
   insert_query <- "
     INSERT INTO project (project_name, owner, created_by, date, status) 
-    VALUES (?, ?, ?, NOW(), 1)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP, 1)
   "
   
   tryCatch({
@@ -569,7 +569,7 @@ add_coding <- function(pool, code_id, file_id, selected_text, start_pos, end_pos
   
   insert_query <- "
     INSERT INTO coding (cid, fid, seltext, selfirst, selend, project_id, owner, memo, date, status) 
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), 1)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 1)
   "
   
   tryCatch({
