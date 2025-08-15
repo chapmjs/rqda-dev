@@ -1032,7 +1032,7 @@ analysisToolsServer <- function(input, output, session, db_pool, user_id, curren
       return(
         div(
           style = "text-align: center; padding: 50px; color: #666;",
-          icon("chart-bar", "fa-3x text-muted"),
+          icon("chart-bar", class = "fa-3x text-muted"),
           h4("No Analysis Results", style = "margin-top: 15px;"),
           p("Run an analysis to see detailed summary information.")
         )
