@@ -14,6 +14,9 @@ library(stringr)
 library(dplyr)
 library(plotly)
 
+# Source configuration and validation
+source("config.R")
+
 # Source modules
 source("modules/database.R")
 source("modules/authentication.R")
@@ -22,14 +25,17 @@ source("modules/file_management.R")
 source("modules/coding_system.R")
 source("modules/analysis_tools.R")
 
+# Validate environment and database connection at startup
+tryCatch({
+  startup_validation()
+}, error = function(e) {
+  cat("❌ Startup validation failed:", e$message, "\n")
+  cat("Please check your configuration and try again.\n")
+  stop(e$message)
+})
+
 # Database configuration - all parameters from environment variables
-DB_CONFIG <- list(
-  host = Sys.getenv("DB_HOST", "localhost"),           # Default to localhost if not set
-  dbname = Sys.getenv("DB_NAME", "rqda_online"),       # Default database name
-  username = Sys.getenv("DB_USER"),                    # MySQL username
-  password = Sys.getenv("DB_PASS"),                    # MySQL password
-  port = as.integer(Sys.getenv("DB_PORT", "3306"))     # MySQL port, default 3306
-)
+DB_CONFIG <- get_db_config()
 
 # Define UI
 ui <- dashboardPage(
