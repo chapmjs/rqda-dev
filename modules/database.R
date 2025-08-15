@@ -30,6 +30,335 @@ db_connect_pool <- function(config) {
   )
 }
 
+# Create all required tables if they don't exist
+create_tables_if_not_exist <- function(pool) {
+  cat("Checking and creating database tables...\n")
+  
+  # Define all table creation statements
+  table_statements <- list(
+    project = "
+      CREATE TABLE IF NOT EXISTS project (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        databaseversion VARCHAR(20) DEFAULT '0.2.2',
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        memo TEXT,
+        about TEXT,
+        owner VARCHAR(255),
+        status TINYINT DEFAULT 1,
+        project_name VARCHAR(255) NOT NULL,
+        created_by VARCHAR(255),
+        INDEX idx_owner (owner),
+        INDEX idx_status (status)
+      )",
+    
+    users = "
+      CREATE TABLE IF NOT EXISTS users (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        username VARCHAR(255) UNIQUE NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        last_login DATETIME,
+        active TINYINT DEFAULT 1,
+        INDEX idx_username (username),
+        INDEX idx_email (email)
+      )",
+    
+    source = "
+      CREATE TABLE IF NOT EXISTS source (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        file LONGTEXT NOT NULL,
+        memo TEXT,
+        owner VARCHAR(255),
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status),
+        INDEX idx_owner (owner),
+        FULLTEXT(file, name)
+      )",
+    
+    filecat = "
+      CREATE TABLE IF NOT EXISTS filecat (
+        catid INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        memo TEXT,
+        owner VARCHAR(255),
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    freecode = "
+      CREATE TABLE IF NOT EXISTS freecode (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        memo TEXT,
+        owner VARCHAR(255),
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        status TINYINT DEFAULT 1,
+        color VARCHAR(7) DEFAULT '#FFFF00',
+        project_id INT,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status),
+        INDEX idx_name (name)
+      )",
+    
+    codecat = "
+      CREATE TABLE IF NOT EXISTS codecat (
+        catid INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        memo TEXT,
+        owner VARCHAR(255),
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    coding = "
+      CREATE TABLE IF NOT EXISTS coding (
+        rowid INT AUTO_INCREMENT PRIMARY KEY,
+        cid INT NOT NULL,
+        fid INT NOT NULL,
+        seltext TEXT,
+        selfirst INT,
+        selend INT,
+        status TINYINT DEFAULT 1,
+        owner VARCHAR(255),
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        memo TEXT,
+        project_id INT,
+        FOREIGN KEY (cid) REFERENCES freecode(id) ON DELETE CASCADE,
+        FOREIGN KEY (fid) REFERENCES source(id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_cid_fid (cid, fid),
+        INDEX idx_project_status (project_id, status),
+        INDEX idx_position (fid, selfirst, selend),
+        FULLTEXT(seltext)
+      )",
+    
+    treecode = "
+      CREATE TABLE IF NOT EXISTS treecode (
+        cid INT,
+        catid INT,
+        memo TEXT,
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        owner VARCHAR(255),
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        PRIMARY KEY (cid, catid),
+        FOREIGN KEY (cid) REFERENCES freecode(id) ON DELETE CASCADE,
+        FOREIGN KEY (catid) REFERENCES codecat(catid) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    treefile = "
+      CREATE TABLE IF NOT EXISTS treefile (
+        fid INT,
+        catid INT,
+        memo TEXT,
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        owner VARCHAR(255),
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        PRIMARY KEY (fid, catid),
+        FOREIGN KEY (fid) REFERENCES source(id) ON DELETE CASCADE,
+        FOREIGN KEY (catid) REFERENCES filecat(catid) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    annotation = "
+      CREATE TABLE IF NOT EXISTS annotation (
+        rowid INT AUTO_INCREMENT PRIMARY KEY,
+        fid INT NOT NULL,
+        position INT,
+        annotation TEXT,
+        owner VARCHAR(255),
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        FOREIGN KEY (fid) REFERENCES source(id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_fid_position (fid, position),
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    cases = "
+      CREATE TABLE IF NOT EXISTS cases (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        memo TEXT,
+        owner VARCHAR(255),
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    caseAttr = "
+      CREATE TABLE IF NOT EXISTS caseAttr (
+        variable VARCHAR(255),
+        value TEXT,
+        caseId INT,
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        owner VARCHAR(255),
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        PRIMARY KEY (variable, caseId),
+        FOREIGN KEY (caseId) REFERENCES cases(id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    caselinkage = "
+      CREATE TABLE IF NOT EXISTS caselinkage (
+        caseid INT,
+        fid INT,
+        owner VARCHAR(255),
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        PRIMARY KEY (caseid, fid),
+        FOREIGN KEY (caseid) REFERENCES cases(id) ON DELETE CASCADE,
+        FOREIGN KEY (fid) REFERENCES source(id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    attributes = "
+      CREATE TABLE IF NOT EXISTS attributes (
+        name VARCHAR(255) PRIMARY KEY,
+        status TINYINT DEFAULT 1,
+        memo TEXT,
+        owner VARCHAR(255),
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        class VARCHAR(50) DEFAULT 'character',
+        project_id INT,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    fileAttr = "
+      CREATE TABLE IF NOT EXISTS fileAttr (
+        variable VARCHAR(255),
+        value TEXT,
+        fid INT,
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        owner VARCHAR(255),
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        PRIMARY KEY (variable, fid),
+        FOREIGN KEY (fid) REFERENCES source(id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    image = "
+      CREATE TABLE IF NOT EXISTS image (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255),
+        imagepath TEXT,
+        memo TEXT,
+        owner VARCHAR(255),
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    imageCoding = "
+      CREATE TABLE IF NOT EXISTS imageCoding (
+        cid INT,
+        iid INT,
+        x1 INT,
+        y1 INT,
+        x2 INT,
+        y2 INT,
+        memo TEXT,
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        dateM DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        owner VARCHAR(255),
+        status TINYINT DEFAULT 1,
+        project_id INT,
+        FOREIGN KEY (cid) REFERENCES freecode(id) ON DELETE CASCADE,
+        FOREIGN KEY (iid) REFERENCES image(id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        INDEX idx_project_status (project_id, status)
+      )",
+    
+    project_permissions = "
+      CREATE TABLE IF NOT EXISTS project_permissions (
+        project_id INT,
+        user_id INT,
+        permission_level ENUM('owner', 'editor', 'viewer') DEFAULT 'viewer',
+        granted_by INT,
+        granted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (project_id, user_id),
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (granted_by) REFERENCES users(id)
+      )"
+  )
+  
+  created_tables <- c()
+  failed_tables <- c()
+  
+  # Create tables in dependency order (core tables first)
+  table_order <- c("users", "project", "source", "filecat", "freecode", "codecat", 
+                   "coding", "treecode", "treefile", "annotation", "cases", 
+                   "caseAttr", "caselinkage", "attributes", "fileAttr", 
+                   "image", "imageCoding", "project_permissions")
+  
+  for (table_name in table_order) {
+    if (table_name %in% names(table_statements)) {
+      tryCatch({
+        pool::dbExecute(pool, table_statements[[table_name]])
+        cat(sprintf("✓ Table '%s' ready\n", table_name))
+        created_tables <- c(created_tables, table_name)
+      }, error = function(e) {
+        cat(sprintf("✗ Failed to create table '%s': %s\n", table_name, e$message))
+        failed_tables <- c(failed_tables, table_name)
+      })
+    }
+  }
+  
+  # Summary
+  cat(sprintf("\nTable creation summary: %d/%d successful\n", 
+              length(created_tables), length(table_order)))
+  
+  if (length(failed_tables) > 0) {
+    warning(paste("Failed to create tables:", paste(failed_tables, collapse = ", ")))
+    return(FALSE)
+  }
+  
+  return(TRUE)
+}
+
 # Execute query with error handling
 db_execute_query <- function(pool, query, params = list()) {
   tryCatch({
