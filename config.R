@@ -233,8 +233,8 @@ test_database_connection <- function(config = NULL) {
     # Test basic connection
     pool <- db_connect_pool(config)
     
-    # Test query execution
-    result <- pool::dbGetQuery(pool, "SELECT 1 as test, NOW() as current_time")
+    # Test query execution with MariaDB-compatible syntax
+    result <- pool::dbGetQuery(pool, "SELECT 1 as test, CURRENT_TIMESTAMP as current_time")
     
     cat("✅ Database connection successful!\n")
     cat("Server time:", as.character(result$current_time), "\n\n")
